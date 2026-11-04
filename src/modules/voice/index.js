@@ -7,6 +7,8 @@ import { textToSpeech, edgeInstalled, installEdge, voiceConverters } from '../..
 import { createSongVoice } from '../../voice/rvc.js'
 import { toMono16k } from '../../voice/wav.js'
 import { fileOf } from '../../local/local.js'
+import { publicProviders } from '../../voice/providers.js'
+import { asrConfigured, asrInfo, transcribeAudio } from '../../voice/asr.js'
 
 export default {
   id: 'voice',
@@ -14,7 +16,7 @@ export default {
   version: '1.0.0',
   description: '发语音条：把她的话念出来（关掉后想发语音时改发文字）',
   tab: 'voice',
-  files: ['voice/tts.js', 'voice/rvc.js'],
+  files: ['voice/tts.js', 'voice/providers.js', 'voice/asr.js', 'voice/rvc.js'],
   setup(api) {
     const { hub, onebot, local, http } = api.core
 
@@ -54,9 +56,12 @@ export default {
       const b = await http.body(req)
       const { file, engine } = await speak(String(b.text || '你好呀，我是大肥鱼'))
       const buf = readFileSync(file)
-      return { ok: true, engine, mime: file.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', data: buf.toString('base64') }
+      const mime = file.endsWith('.wav') ? 'audio/wav' : file.endsWith('.ogg') ? 'audio/ogg' : 'audio/mpeg'
+      return { ok: true, engine, mime, data: buf.toString('base64') }
     })
     api.route('/voice/install', async () => installEdge(api.log))
+    // 云端 TTS / ASR 的字段定义和默认值：面板按这个自动出表单，以后加厂商不用改面板
+    api.route('/voice/providers', async () => publicProviders())
 
     // DSH 自带语音识别：看状态 / 下载模型
     const stt = () => api.dsh.get('speechToText')
@@ -84,6 +89,27 @@ export default {
       const t = Date.now()
       const text = await hub.localTranscribe(last.seg)
       return { ok: Boolean(text), heard: text, at: new Date(last.time * 1000).toLocaleString(), ms: Date.now() - t }
+    })
+    // 自检云端识别：先用内置语音念一句（不拿云端 TTS 自己测自己），再交给配好的 ASR 服务
+    api.route('/voice/asr-provider-test', async (req) => {
+      const b = await http.body(req)
+      const voice = api.config().voice
+      if (!asrConfigured(voice)) return { ok: false, message: '没选云端识别服务（面板「语音 → 听语音」里选一个）' }
+      const text = String(b.text || '今天想吃白米饭')
+      let file
+      try {
+        const r = await textToSpeech(text, { engine: process.platform === 'win32' ? 'windows' : 'edge' }, api.log)
+        file = r.file
+      } catch (error) {
+        return { ok: false, message: '生成测试语音失败：' + error.message }
+      }
+      try {
+        const t = Date.now()
+        const heard = await transcribeAudio(readFileSync(file), voice, api.log)
+        return { ok: Boolean(heard), said: text, heard, provider: asrInfo(voice).name || asrInfo(voice).id, ms: Date.now() - t }
+      } catch (error) {
+        return { ok: false, message: '识别失败：' + error.message }
+      }
     })
     // 自检「听语音」：Windows 语音念一句 → 转 16k 单声道 → DSH 自带识别 → 看能不能认回来
     api.route('/voice/asr-test', async (req) => {

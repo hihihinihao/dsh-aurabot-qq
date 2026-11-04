@@ -11,17 +11,17 @@ export default {
   version: '1.0.0',
   description: '长期记忆：记事、想起、每日整理、小档案和相处经验',
   tab: 'mood',
-  files: ['features/memory.js'],
+  files: ['features/memory.js', 'features/memory-vector.js'],
   setup(api) {
     const { hub, http } = api.core
     const memory = createMemoryStore({ dsh: api.dsh, getConfig: api.config, hub, log: api.log })
 
     api.context(({ chat, sessionId }) => (chat.kind === 'system' ? '' : memory.contextFor(chat, sessionId)))
     // #79：随消息变化的相关记忆放在「交给她的内容」里，不放进每轮都会追加的运行时上下文快照
-    api.on('prompt', (content, info) => {
+    api.on('prompt', async (content, info) => {
       try {
         if (!info || !info.chat || info.chat.kind === 'system' || !Array.isArray(content)) return content
-        const hint = memory.recallHint(info.chat, info.queryText || '', info.prevText || '')
+        const hint = await memory.recallHintAsync(info.chat, info.queryText || '', info.prevText || '')
         if (!hint) return content
         return [{ type: 'text', text: hint }, ...content]
       } catch (error) { return content }
@@ -49,7 +49,7 @@ export default {
           properties: { query: str('想找什么') },
           required: ['query'],
           execute: async ({ query }) => {
-            const hits = memory.recall(String(query || ''), { about: chat.userId, limit: 8, where: current + '（翻记忆）' })
+            const hits = await memory.recallWithVector(String(query || ''), { about: chat.userId, limit: 8, where: current + '（翻记忆）' })
             return hits.length ? { ok: true, message: hits.map((h) => memoryLine(h.it)).join('；') } : { ok: true, message: '没想起相关的事' }
           },
         }),
@@ -108,6 +108,17 @@ export default {
       const b = await http.body(req)
       // 立即整理一次：连今天的也提炼（今天的聊天流水不删，写日记还要用）
       return memory.consolidate({ includeToday: b.includeToday !== false })
+    })
+    // 语义检索（Embedding RAG）：状态 / 连通性测试 / 清空重建
+    api.route('/memory/vector/status', async () => ({ ok: true, ...memory.vectorStatus() }))
+    api.route('/memory/vector/test', async (req) => {
+      const b = await http.body(req)
+      try { return { ok: true, ...(await memory.vectorTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
+    })
+    api.route('/memory/vector/rebuild', async () => {
+      if (!memory.vectorReset()) return { ok: false, message: '先开启向量检索并填好服务地址、模型和 Key' }
+      await memory.vectorSync()
+      return { ok: true, message: '本机向量已清空，正在按当前记忆重新同步', ...memory.vectorStatus() }
     })
 
     return memory

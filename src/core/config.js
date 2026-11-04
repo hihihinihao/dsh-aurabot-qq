@@ -5,6 +5,7 @@ import { DEFAULT_GROUP_POLICY } from '../chat/group-policy.js'
 import { LEVELS, PROFILE_PERM_KEYS, PROFILE_PERM_LEVELS, profilePermDefault } from '../chat/access.js'
 import { normalizeChatModels } from '../chat/chat-model.js'
 import { DIARY_AUDIENCES } from '../features/qzone-audience.js'
+import { listTtsProviders, listAsrProviders } from '../voice/providers.js'
 
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
@@ -68,16 +69,25 @@ export const DEFAULTS = {
   voice: {
     enabled: true,
     // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / http = 指定引擎（失败都会退回 Windows 语音）
+    // 另外 engine 可以直接写云端 provider 的 id（siliconflow / openai / doubao…），见 src/voice/providers.js
     engine: 'auto',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
-    http: { urlTemplate: '' }, // 通用：GET 这个地址（{text} 会替换成要念的话），返回音频
+    // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
+    http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000 },
+    // 云端 provider 的参数：{ 厂商id: { 字段: 值 } }；字段和默认值由 providers.js 声明，面板按它自动生成
+    providerConfig: {},
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
     autoChance: 0.15, // 短回复自动变语音的概率
     autoMaxChars: 80,
     asr: true, // 听语音
+    // 云端语音识别：留空 = 不用。默认 QQ 自带优先（快、免费），云端做兜底；
+    // asrPrefer = cloud 时反过来（实测硅基 SenseVoice 一次要十几秒，默认不建议）
+    asrProvider: '',
+    asrConfig: {},
+    asrPrefer: 'qq',
     // 语音条变声：用翻唱里导入的 RVC 音色模型（先 TTS 念，再变声）。留空 = 不变声
     songVoice: '',
     songPitch: 0, // 变调半音：男声模型转女声一般 +12
@@ -191,7 +201,24 @@ export const DEFAULTS = {
     awakeTo: 23,
   },
   mood: { enabled: true, halfLifeHours: 3, judge: false }, // judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
-  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'] }, // 每天这几个时间把临时记忆（聊天流水）整理进长期记忆、相处经验和说话方式；过了一天的流水整理完清空
+  memory: {
+    enabled: true,
+    recallCount: 6,
+    dailyConsolidate: true,
+    consolidateTimes: ['04:00', '16:00'], // 每天这几个时间把临时记忆（聊天流水）整理进长期记忆、相处经验和说话方式；过了一天的流水整理完清空
+    // 语义检索（可选）：把记忆文本发给 embedding 服务换向量，存在本机；召回时和关键词一起排序。
+    // provider 只影响面板预置的地址/模型，代码统一走 OpenAI 兼容的 {baseUrl}/embeddings（硅基 / 方舟 / 自建都行）。
+    vector: {
+      enabled: false,
+      provider: 'siliconflow',
+      baseUrl: '',
+      model: '',
+      apiKey: '',
+      dimensions: 0, // 0 = 不传；只有 Qwen3-Embedding 等支持自定义维度的模型需要
+      minSimilarity: 0.55,
+      queryTimeoutMs: 3000,
+    },
+  },
   song: {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
@@ -242,6 +269,48 @@ const bool = (v, d) => (typeof v === 'boolean' ? v : d)
 const qq = (v) => String(v ?? '').replace(/\D/g, '')
 const qqList = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[\s,，;；]+/)).map(qq).filter(Boolean))]
 const hhmm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v)) ? String(v) : d)
+
+// 请求头：正常是字符串（一行一个）；手写成对象 / 数组时展开成同样的多行文本，
+// 免得下游按行解析时认不出来，静默把头全丢掉。
+const headerLines = (v) => {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.map((x) => String(x ?? '')).join('\n')
+  if (isObj(v)) return Object.entries(v).map(([k, x]) => `${k}: ${x ?? ''}`).join('\n')
+  return v == null ? '' : String(v)
+}
+// 请求体：正常是字符串；手写成对象 / 数组时序列化回去（占位符 {text} / {reqid} 照样能替换）
+const bodyText = (v) => {
+  if (typeof v === 'string') return v
+  if (isObj(v) || Array.isArray(v)) return JSON.stringify(v, null, 2)
+  return v == null ? '' : String(v)
+}
+
+/**
+ * 云端 provider 参数只保留 providers.js 声明过的字段，并按字段类型收敛。
+ * 这样面板 / 手改配置里多出来的键不会进配置文件，也不怕数字被写成字符串。
+ */
+function normalizeProviderMap(raw, defs) {
+  const out = {}
+  const src = isObj(raw) ? raw : {}
+  for (const def of defs) {
+    const input = isObj(src[def.id]) ? src[def.id] : {}
+    const item = {}
+    for (const f of def.fields) {
+      const v = input[f.key]
+      if (v === undefined || v === null || v === '') continue
+      if (f.type === 'number') {
+        const n = Number(v)
+        if (Number.isFinite(n)) item[f.key] = n
+      } else if (f.type === 'select') {
+        if (!f.options.length || f.options.some((o) => String(o.value) === String(v))) item[f.key] = String(v)
+      } else {
+        item[f.key] = String(v)
+      }
+    }
+    if (Object.keys(item).length) out[def.id] = item
+  }
+  return out
+}
 
 export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
@@ -368,6 +437,15 @@ export function normalize(raw) {
   c.memory.consolidateTimes = [...new Set((Array.isArray(c.memory.consolidateTimes) ? c.memory.consolidateTimes : String(c.memory.consolidateTimes || '').split(/[\s,，]+/)).map((t) => hhmm(t, '')).filter(Boolean).map((t) => t.padStart(5, '0')))].sort().slice(0, 4)
   if (!c.memory.consolidateTimes.length) c.memory.consolidateTimes = ['04:00', '16:00']
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, 20)
+  if (!isObj(c.memory.vector)) c.memory.vector = structuredClone(DEFAULTS.memory.vector)
+  const v = c.memory.vector
+  v.enabled = bool(v.enabled, false)
+  v.provider = ['siliconflow', 'ark', 'openai', 'custom'].includes(v.provider) ? v.provider : 'siliconflow'
+  for (const k of ['baseUrl', 'model', 'apiKey']) v[k] = String(v[k] || '').trim()
+  v.baseUrl = v.baseUrl.replace(/\/+$/, '')
+  v.dimensions = Math.round(num(v.dimensions, 0, 0, 8192))
+  v.minSimilarity = num(v.minSimilarity, 0.55, 0.2, 0.95)
+  v.queryTimeoutMs = num(v.queryTimeoutMs, 3000, 500, 15000)
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   c.merge.enabled = bool(c.merge.enabled, true)
@@ -380,7 +458,20 @@ export function normalize(raw) {
   c.titleFilter.title = String(c.titleFilter.title ?? '').replace(/[​-‍﻿]/g, '').trim().slice(0, 30) || '大肥鱼'
   g.burstMax = num(g.burstMax, 8, 1, 50)
   g.burstWindowSec = num(g.burstWindowSec, 120, 10, 3600)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  // engine 还允许直接写云端 provider 的 id；以后注册了新厂商，配置里就能直接选，不用改这里
+  const engines = new Set(['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', ...listTtsProviders().map((d) => d.id)])
+  if (!engines.has(c.voice.engine)) c.voice.engine = 'auto'
+  if (!isObj(c.voice.http)) c.voice.http = structuredClone(DEFAULTS.voice.http)
+  c.voice.http.urlTemplate = String(c.voice.http.urlTemplate ?? '').trim()
+  c.voice.http.method = String(c.voice.http.method ?? '').trim().toUpperCase() === 'POST' ? 'POST' : 'GET'
+  c.voice.http.headers = headerLines(c.voice.http.headers)
+  c.voice.http.body = bodyText(c.voice.http.body)
+  c.voice.http.sampleRate = num(c.voice.http.sampleRate, 24000, 8000, 48000)
+  // 云端 TTS / ASR 的参数按 provider 定义的字段收敛；未知字段不写进配置
+  c.voice.providerConfig = normalizeProviderMap(c.voice.providerConfig, listTtsProviders())
+  c.voice.asrProvider = listAsrProviders().some((d) => d.id === c.voice.asrProvider) ? c.voice.asrProvider : ''
+  c.voice.asrConfig = normalizeProviderMap(c.voice.asrConfig, listAsrProviders())
+  c.voice.asrPrefer = ['qq', 'cloud'].includes(c.voice.asrPrefer) ? c.voice.asrPrefer : 'qq'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)
@@ -446,7 +537,19 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
+const providerSecretPaths = () => {
+  const out = []
+  for (const [defs, group] of [[listTtsProviders(), 'providerConfig'], [listAsrProviders(), 'asrConfig']]) {
+    for (const def of defs) for (const f of def.fields) if (f.secret) out.push(['voice', group, def.id, f.key])
+  }
+  return out
+}
+const SECRETS = [
+  ['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'],
+  ['memory', 'vector', 'apiKey'],
+  ...providerSecretPaths(),
+  ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'],
+]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

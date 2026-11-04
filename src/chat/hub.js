@@ -15,6 +15,7 @@ import { decideGroupReply, policyFor, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
+import { asrConfigured, transcribeAudio } from '../voice/asr.js'
 import { mimeOf } from './inbound.js'
 import { redact } from '../core/redact.js'
 import { defaultModel, pickReasoningEffort, canSeeImages, modelVision } from '../core/llm.js'
@@ -911,19 +912,25 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return Boolean(q && q.ok && q.isBot)
   }
 
+  /** QQ 语音是 silk：让网关转成 wav，再统一成 16kHz 单声道 PCM16。 */
+  async function recordWav(rec) {
+    const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
+    const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
+    return toMono16k(raw)
+  }
+
   async function transcribe(msg) {
     for (const rec of msg.records) {
       // 本地接口接管：用用户自己的识别服务（最先试）
       if (localApi?.active('asr')) {
         try {
-          const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
-          const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
+          const wav = await recordWav(rec)
           const { writeFileSync, mkdirSync } = await import('node:fs')
           const { join } = await import('node:path')
           const dir = localApi.dir() + '/out'
           mkdirSync(dir, { recursive: true })
           const file = join(dir, `asr-${Date.now()}.wav`)
-          writeFileSync(file, toMono16k(raw))
+          writeFileSync(file, wav)
           const r = await localApi.call('asr', { file })
           const text = String(typeof r === 'string' ? r : r?.text || '').trim()
           if (text) return `[语音] ${text}`
@@ -931,11 +938,38 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           log.debug('本地接口语音识别失败：', error.message)
         }
       }
-      try {
-        const r = await onebot.call('fetch_ptt_text', { message_id: Number(msg.messageId) || msg.messageId }, { timeoutMs: 20000 })
-        if (r?.text) return `[语音] ${r.text}`
-      } catch (error) {
-        log.debug('QQ 语音转文字失败：', error.message)
+      // 云端识别：默认排在 QQ 后面（硅基 SenseVoice 实测十几秒，别让语音把回复拖住）；
+      // 面板里把 asrPrefer 设成 cloud 就提前到 QQ 前面。
+      const voiceCfg = getConfig().voice
+      const viaCloud = async () => {
+        if (!asrConfigured(voiceCfg)) return ''
+        try {
+          return await transcribeAudio(await recordWav(rec), voiceCfg, log)
+        } catch (error) {
+          log.debug('云端语音识别失败：', error.message)
+          return ''
+        }
+      }
+      const viaQq = async () => {
+        try {
+          const r = await onebot.call('fetch_ptt_text', { message_id: Number(msg.messageId) || msg.messageId }, { timeoutMs: 20000 })
+          return String(r?.text || '').trim()
+        } catch (error) {
+          log.debug('QQ 语音转文字失败：', error.message)
+          return ''
+        }
+      }
+      if (voiceCfg.asrPrefer === 'cloud') {
+        const text = await viaCloud()
+        if (text) return `[语音] ${text}`
+      }
+      {
+        const text = await viaQq()
+        if (text) return `[语音] ${text}`
+      }
+      if (voiceCfg.asrPrefer !== 'cloud') {
+        const text = await viaCloud()
+        if (text) return `[语音] ${text}`
       }
       try {
         const text = await localTranscribe(rec)
@@ -963,9 +997,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       try { stt.prepare(pid) } catch (error) {}
       throw new Error(`识别模型还在准备（${prov.preparation.phase}）`)
     }
-    const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
-    const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
-    const spec = stt.resolve({ audio: new Uint8Array(toMono16k(raw)) })
+    const spec = stt.resolve({ audio: new Uint8Array(await recordWav(rec)) })
     const r = await stt.transcribe(spec, AbortSignal.timeout(60000))
     const text = typeof r === 'string' ? r : r?.text || r?.transcript
     return text ? String(text).trim() : ''

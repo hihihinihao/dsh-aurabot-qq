@@ -308,9 +308,9 @@ return function Panel({ settings, save, toast }) {
 | id | 名字 | 导出（`api.use(id)` 拿到的） |
 |---|---|---|
 | `stickers` | 表情包 | `library()` `match(名字)` `pickForReply(文字)` `collect(消息段, chatId)` `addFromBuffer(buf, { name, tags })` `rename(md5, 名字, 标签)` `remove(md5)` `segmentFor(item)` |
-| `voice` | 语音 | `speak(文字) → { file, engine }` |
+| `voice` | 语音 | `speak(文字) → { file, engine }`；云端 provider 在 `api.lib('voice/providers.js')` 里，`registerTtsProvider(def)` / `registerAsrProvider(def)` 可以加新厂商 |
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
-| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()` …… |
+| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `recallWithVector(查询, { about, limit })` `recallHintAsync(chat, 这一句, 上一句)` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()`；向量：`vectorStatus()` `vectorTest(文字)` `vectorReset()` `vectorSync()` |
 | `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
 | `group-admin` | 群管 | （只有工具：`qq_group_admin`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
@@ -320,6 +320,12 @@ return function Panel({ settings, save, toast }) {
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
 | `douyin` | 刷抖音 | `run` `browse` `watch` `likeVideo` `commentVideo` `confirmOwner` `account` `loginStep` `showWindow` `state`；工具 `douyin_watch` / `douyin_browse` / `douyin_like` / `douyin_comment` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
+
+**加一家新的云端语音（不用改面板）**：写一个带 `id` / `name` / `fields` / `defaults` 的定义，
+TTS 再写 `synthesize({ text, config }) → { buffer, mime }`，ASR 再写 `transcribe({ buffer, config }) → { text }`，
+在模块加载时调用 `api.lib('voice/providers.js').registerTtsProvider(def)`（或 `registerAsrProvider`）。
+面板会按 `fields` 自动生成表单，配置里按字段名存到 `voice.providerConfig.<id>` / `voice.asrConfig.<id>`，
+标记 `secret: true` 的字段自动从面板回传里抹掉。内置的硅基、OpenAI、豆包都是这么注册的。
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。

@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
+import { createVectorIndex } from './memory-vector.js'
 
 // ---------------- 纯函数：切词与打分 ----------------
 
@@ -66,6 +67,12 @@ export function search(idx, query, o = {}) {
   const q = [...new Set(tokenize(query))]
   const now = o.now ?? Date.now()
   const aboutSet = new Set((Array.isArray(o.about) ? o.about : o.about ? [o.about] : []).map(String))
+  // 语义候选：id → 相似度（调用方已经按阈值筛过；同一条只留最高的）
+  const vectors = new Map()
+  for (const hit of o.vectorHits || []) {
+    if (!hit || !hit.id || !Number.isFinite(hit.similarity)) continue
+    if (!vectors.has(hit.id) || vectors.get(hit.id) < hit.similarity) vectors.set(hit.id, hit.similarity)
+  }
   const k1 = 1.4
   const b = 0.7
   const scored = []
@@ -84,13 +91,33 @@ export function search(idx, query, o = {}) {
     const it = d.it
     if (it.invalidAt && !o.includeInvalid) continue
     const aboutHit = Boolean(it.about) && aboutSet.has(String(it.about))
-    if (s <= 0 && !aboutHit) continue
+    const vector = vectors.get(it.id)
+    // 关键词和「关于这个人」都没命中时，只有语义足够近的才留下
+    if (s <= 0 && !aboutHit && vector === undefined) continue
     const importance = 0.6 + 0.8 * (Number(it.importance) || 0.5)
-    const score = (s + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
-    scored.push({ it, score, why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : []) })
+    const score = ((s > 0 ? s : (vector || 0)) + (aboutHit ? 0.8 : 0)) * importance * (0.55 + 0.45 * retention(it, now))
+    scored.push({
+      it,
+      score,
+      keyword: s,
+      vector,
+      why: why.sort((x, y) => y[1] - x[1]).slice(0, 3).map((w) => w[0]).concat(aboutHit ? ['（关于这个人）'] : [], vector !== undefined ? ['（语义相关）'] : []),
+    })
   }
-  scored.sort((x, y) => y.score - x.score)
-  return scored.filter((x) => x.score >= (o.minScore ?? 0.35)).slice(0, o.limit ?? 6)
+  const limit = Math.max(0, o.limit ?? 6)
+  // 只用关键词时保持原来的排序和阈值；有向量时再按名次融合，分数不能直接相加
+  const hits = scored.filter((x) => (x.keyword > 0 || (x.it.about && aboutSet.has(String(x.it.about)))) && x.score >= (o.minScore ?? 0.35))
+  if (vectors.size) {
+    const keywordRank = new Map(hits.map((h, i) => [h, i + 1]))
+    const have = new Set(hits)
+    for (const h of scored) if (h.vector !== undefined && !have.has(h)) { hits.push(h); have.add(h) }
+    const vectorRank = new Map(hits.filter((h) => h.vector !== undefined).sort((a, b) => b.vector - a.vector).map((h, i) => [h, i + 1]))
+    const fused = (h) => (keywordRank.has(h) ? 1 / (60 + keywordRank.get(h)) : 0) + (vectorRank.has(h) ? 1 / (60 + vectorRank.get(h)) : 0)
+    hits.sort((a, b) => fused(b) - fused(a) || b.score - a.score)
+  } else {
+    hits.sort((x, y) => y.score - x.score)
+  }
+  return hits.slice(0, limit).map(({ keyword, vector, ...hit }) => hit)
 }
 
 /** 「刚才」「3 小时前」「昨天」这样的说法。 */
@@ -168,7 +195,8 @@ export function parseReflection(out) {
   }
 }
 
-export function createMemoryStore({ dsh, getConfig, hub, log }) {
+export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
+  const vector = createVectorIndex({ getConfig, log, fetchImpl })
   const file = () => dataDir('memories.json')
   const load = () => readJson(file(), () => ({ items: [] }))
   const save = (s) => {
@@ -304,9 +332,29 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   const recallLog = [] // 最近几次想起了什么（给面板看）
-  function recall(query, { about, limit, where = '', context = '' } = {}) {
+
+  /** 只查已经同步、文字没变的记忆；任何失败都返回空数组，调用方继续用关键词。 */
+  async function vectorHits(query) {
+    const cfg = getConfig().memory
+    const q = String(query || '').trim()
+    if (!cfg.enabled || !cfg.vector?.enabled || !q) return []
+    try {
+      const items = load().items
+      const ids = vector.validIds(items)
+      if (!ids.length) return []
+      const vec = await vector.queryVector(q)
+      if (!vec) return []
+      const min = Number(cfg.vector.minSimilarity) || 0.55
+      return vector.search(vec, ids, ids.length).filter((h) => h.similarity >= min)
+    } catch (error) {
+      log.debug?.('向量查询失败，暂时使用关键词检索')
+      return []
+    }
+  }
+
+  function recall(query, { about, limit, where = '', context = '', vectorHits } = {}) {
     const max = limit ?? getConfig().memory.recallCount
-    const hits = search(index(), query, { about, limit: max })
+    const hits = search(index(), query, { about, limit: max, vectorHits })
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
@@ -330,6 +378,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       writeJson(file(), s) // 只改命中计数，不动索引
     }
     return hits
+  }
+
+  /** 带语义召回的版本：聊天和 recall_memory 工具优先用它；没配向量时就是普通 recall。 */
+  async function recallWithVector(query, opts = {}) {
+    return recall(query, { ...opts, vectorHits: await vectorHits(query) })
   }
 
   // ---------- 相处经验：按人（私聊按 QQ 号，群按群）归类的、概括性的「怎么和 TA 相处」，越聊越懂 ----------
@@ -483,7 +536,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
    * 这一轮聊到的事相关的记忆（#79）：内容随每条消息变化，所以由模块在「交给她的内容」里附上，
    * 不放进每轮都会追加的运行时上下文快照。最多 4 条、总长 ≤ 300 字。
    */
-  function recallHint(chat, queryText, prevText = '') {
+  function recallHintText(chat, queryText, prevText, vectorHits) {
     const cfg = getConfig().memory
     if (!cfg.enabled) return ''
     const q = String(queryText || '').trim()
@@ -494,11 +547,22 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     const about = chat && chat.kind === 'private' ? chat.userId : undefined
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText, vectorHits }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
     if (!hits.length) return backdrop
     let body = hits.map((h) => memoryLine(h.it)).join('；')
     if (body.length > 300) body = body.slice(0, 300) + '…'
     return ['（你记得这些事，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）', backdrop].filter(Boolean).join('\n')
+  }
+
+  /** 同步版（老接口，纯关键词）；聊天里用 recallHintAsync 才会带上语义召回。 */
+  function recallHint(chat, queryText, prevText = '') {
+    return recallHintText(chat, queryText, prevText, [])
+  }
+
+  async function recallHintAsync(chat, queryText, prevText = '') {
+    const q = String(queryText || '').trim()
+    if (!q) return ''
+    return recallHintText(chat, queryText, prevText, await vectorHits(q))
   }
 
   /** 回顾：结合最近聊天和已有经验，更新这个人的相处经验（合并、提炼、最多 8 条，概括不琐碎）。 */
@@ -719,6 +783,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   /** 每分钟调一次：一天几个整理时间点（默认 04:00 / 16:00），到点且这个点今天还没跑过就整理。 */
   async function tick() {
     const cfg = getConfig().memory
+    // 向量索引增量同步：每轮最多 32 条，失败下一分钟再补；不影响后面的记忆整理
+    if (cfg.enabled && cfg.vector?.enabled) {
+      try { await vector.sync(load().items, () => load().items) } catch (error) { log.debug?.('向量索引同步失败，稍后再试') }
+    }
     if (!cfg.enabled || !cfg.dailyConsolidate) {
       const cutoff = dayKey(new Date(Date.now() - 14 * 86400_000))
       for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
@@ -751,7 +819,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   return {
-    recallHint,
+    recallHint, recallHintAsync, recallWithVector, vectorHits,
     add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, importCandidates, importCommit,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
     setProfile, buildProfile,
@@ -775,7 +843,18 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     stats: () => {
       const items = load().items
       const live = items.filter((m) => !m.invalidAt)
-      return { count: live.length, auto: live.filter((m) => m.source === 'auto').length, events: live.filter((m) => m.source === 'event').length, outdated: items.length - live.length }
+      return {
+        count: live.length,
+        auto: live.filter((m) => m.source === 'auto').length,
+        events: live.filter((m) => m.source === 'event').length,
+        outdated: items.length - live.length,
+        vector: vector.status(items),
+      }
     },
+    // 面板「向量检索」用
+    vectorStatus: () => vector.status(load().items),
+    vectorTest: (text) => vector.test(text),
+    vectorReset: () => vector.reset(),
+    vectorSync: () => vector.sync(load().items, () => load().items),
   }
 }

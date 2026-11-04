@@ -1333,8 +1333,51 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         h('div', { className: 'ab-muted ab-small' }, !s ? '正在查翻唱音色…' : (s.available ? '变声要跑一次 RVC，会比普通语音慢几秒；单次变声失败会自动用原声。' : (s.message || '翻唱环境还没装好（面板「翻唱」页一键安装、导入音色后才能给语音条变声）')))) 
     }
 
+    /** 云端语音 provider 列表（字段和默认值由插件声明，面板只负责渲染）。 */
+    function useVoiceProviders() {
+      const [p, setP] = useState(null)
+      useEffect(() => { get('/voice/providers').then(setP).catch(() => setP({ ok: false, tts: [], asr: [] })) }, [])
+      return p || { tts: [], asr: [] }
+    }
+
+    /** 按 provider 声明自动生成表单：以后加厂商不用改这里。 */
+    function ProviderFields({ def, group, draft, setDraft }) {
+      const f = useField(draft, setDraft)
+      if (!def) return null
+      const base = `voice.${group}.${def.id}`
+      const defaultOf = (x) => (x.default === undefined || x.default === null ? '' : x.default)
+      const fill = () => {
+        let next = draft
+        for (const [k, v] of Object.entries(def.defaults || {})) next = setPath(next, `${base}.${k}`, v)
+        setDraft(next)
+      }
+      return h('div', null,
+        def.description ? h('div', { className: 'ab-muted ab-small', style: { margin: '2px 0 6px' } }, def.description) : null,
+        ...def.fields.map((x) => {
+          const path = `${base}.${x.key}`
+          const hint = x.hint || ''
+          if (x.type === 'select') {
+            const opts = (x.options || []).length ? x.options : [{ value: defaultOf(x), label: String(defaultOf(x)) }]
+            return h(Row, { key: x.key, label: x.label, hint }, f.select(path, opts, { width: 180 }))
+          }
+          if (x.type === 'number') return h(Row, { key: x.key, label: x.label, hint }, f.num(path, { min: x.min, max: x.max, step: x.step }))
+          if (x.type === 'password') return h(Row, { key: x.key, label: x.label, hint }, f.text(path, { type: 'password', size: 'wide', placeholder: getPath(draft, path + 'Set') ? '已保存（不改就留空）' : (x.placeholder || '') }))
+          return h(Row, { key: x.key, label: x.label, hint }, f.text(path, { size: 'wide', placeholder: x.placeholder || String(defaultOf(x) || '') }))
+        }),
+        h(Row, { label: '推荐值', hint: '填的是这家服务的默认地址/模型/音色，都能改' },
+          h(Btn, { small: true, kind: 'ghost', onClick: fill }, '填入默认值')))
+    }
+
     function Voice({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
+      const providers = useVoiceProviders()
+      const ttsDef = (providers.tts || []).find((d) => d.id === draft.voice.engine)
+      const asrDef = (providers.asr || []).find((d) => d.id === draft.voice.asrProvider)
+      const fillHttp = (obj) => {
+        let next = draft
+        for (const [k, v] of Object.entries(obj)) next = setPath(next, 'voice.http.' + k, v)
+        setDraft(next)
+      }
       const [txt, setTxt] = useState('晚安啦，今天也辛苦了，明天见～')
       const [src, setSrc] = useState('')
       return h('div', { className: 'ab-grid' },
@@ -1344,6 +1387,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
             { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
             { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
+            ...(providers.tts || []).map((d) => ({ value: d.id, label: d.name, desc: d.description || '云端语音服务' })),
             { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
             { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
           ])),
@@ -1377,7 +1421,35 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h(Row, { key: 'a', label: '参考音频路径', hint: '服务那台电脑上的路径' }, f.text('voice.gptsovits.refAudio', { size: 'wide' })),
             h(Row, { key: 'p', label: '参考音频的文字' }, f.text('voice.gptsovits.promptText', { size: 'wide' })),
           ] : null,
-          draft.voice.engine === 'http' ? h(Row, { label: '地址模板', hint: '{text} 会换成要念的话，返回 wav/mp3' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'http://127.0.0.1:8000/tts?text={text}' })) : null,
+          ttsDef ? h(ProviderFields, { def: ttsDef, group: 'providerConfig', draft, setDraft }) : null,
+          draft.voice.engine === 'http' ? [
+            h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1/audio/speech' })),
+            h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),
+            String(draft.voice.http.method || 'GET').toUpperCase() !== 'GET' ? h(Row, { key: 'h', label: '请求头', hint: '一行一个，空行和 # 开头的行忽略' },
+              h('textarea', { className: 'ab-textarea', rows: 2, value: draft.voice.http.headers || '', placeholder: 'Authorization: Bearer; 你的token', onChange: (e) => setDraft(setPath(draft, 'voice.http.headers', e.target.value)) })) : null,
+            String(draft.voice.http.method || 'GET').toUpperCase() !== 'GET' ? h(Row, { key: 'b', label: '请求体', hint: '{text} 会换成要念的话（自动 JSON 转义），{text_raw} 不转义，{reqid} 每次不同' },
+              h('textarea', { className: 'ab-textarea', rows: 6, value: draft.voice.http.body || '', placeholder: '{"model":"FunAudioLLM/CosyVoice2-0.5B","input":"{text}","voice":"FunAudioLLM/CosyVoice2-0.5B:claire"}', onChange: (e) => setDraft(setPath(draft, 'voice.http.body', e.target.value)) })) : null,
+            h(Row, { key: 's', label: '采样率', hint: '只有服务返回裸 PCM 时才用得到' }, f.select('voice.http.sampleRate', [{ value: 16000, label: '16000 Hz' }, { value: 24000, label: '24000 Hz' }, { value: 32000, label: '32000 Hz' }, { value: 44100, label: '44100 Hz' }], { width: 160 })),
+            h(Row, { key: 'p', label: '常用模板', hint: '填地址、请求头和请求体，再改 Key / 音色' },
+              h(Btn, {
+                small: true, kind: 'ghost',
+                onClick: () => fillHttp({
+                  urlTemplate: 'https://api.siliconflow.cn/v1/audio/speech',
+                  method: 'POST',
+                  headers: 'Authorization: Bearer 你的 API Key\nContent-Type: application/json',
+                  body: '{"model":"FunAudioLLM/CosyVoice2-0.5B","input":"{text}","voice":"FunAudioLLM/CosyVoice2-0.5B:claire","response_format":"mp3"}',
+                }),
+              }, '硅基流动'),
+              h(Btn, {
+                small: true, kind: 'ghost',
+                onClick: () => fillHttp({
+                  urlTemplate: 'https://openspeech.bytedance.com/api/v1/tts',
+                  method: 'POST',
+                  headers: 'Authorization: Bearer; 你的 Access Token\nContent-Type: application/json',
+                  body: '{"app":{"appid":"你的 AppID","token":"你的 Access Token","cluster":"volcano_tts"},"user":{"uid":"aurabot"},"audio":{"voice_type":"zh_female_wanwanxiaohe_moon_bigtts","encoding":"mp3"},"request":{"reqid":"{reqid}","text":"{text}"}}',
+                }),
+              }, '豆包 v1')),
+          ] : null,
           h(Row, { label: '短回复变语音的概率' }, f.percent('voice.autoChance')),
           h(Row, { label: '多短算短回复' }, f.range('voice.autoMaxChars', 10, 200, 5, (v) => v + ' 字')),
           h(Row, { label: '试听', hint: '先保存设置再试听' },
@@ -1386,7 +1458,18 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             src ? h('audio', { src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
         ),
         h(VoiceSongModel, { draft, setDraft }),
-        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给她：优先用 QQ 自带的转文字，不行再用 DSH 自带的语音识别（要在 DSH「插件」里开启「语音输入」）。' },
+        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给她：本地接口 → QQ 自带的转文字 → 云端识别（可选）→ DSH 自带的语音识别。任何一层失败都会自动继续试下一层。' },
+          h(Row, { label: '云端识别', hint: '可选。不选就维持原来的顺序（本地 → QQ → DSH）' },
+            f.select('voice.asrProvider', [{ value: '', label: '不用云端识别' }, ...(providers.asr || []).map((d) => ({ value: d.id, label: d.name }))], { width: 220 })),
+          asrDef ? h(Row, { label: '先用谁', hint: 'QQ 自带通常 1~2 秒；云端更准但实测硅基要十几秒，建议保持「先 QQ」' },
+            f.select('voice.asrPrefer', [{ value: 'qq', label: '先 QQ 自带（推荐）' }, { value: 'cloud', label: '先云端识别' }], { width: 220 })) : null,
+          asrDef ? h(ProviderFields, { def: asrDef, group: 'asrConfig', draft, setDraft }) : null,
+          asrDef ? h(Row, { label: '测试', hint: '先用内置语音念一句，再交给云端识别；改完配置先保存再测' },
+            h(Btn, { small: true, onClick: async () => {
+              toast('正在合成并识别，可能要几秒…')
+              const r = await post('/voice/asr-provider-test', { text: '今天想吃白米饭' })
+              toast(r.ok ? '念的是「' + r.said + '」，听成了「' + r.heard + '」' : r.message)
+            } }, '测试云端识别')) : null,
           h(AsrStatus, { toast })),
       )
     }
@@ -2061,6 +2144,52 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
     }
 
     const SOURCE = { tool: '她自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: '她的经历', import: '导入的' }
+
+    /** 语义检索：向量服务配置 + 本机同步状态。所有服务都走 OpenAI 兼容的 /embeddings。 */
+    function VectorCard({ draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [s, setS] = useState(null)
+      const load = () => get('/memory/vector/status').then(setS).catch(() => {})
+      useEffect(() => { load() }, [])
+      const fill = (baseUrl, model) => {
+        let next = draft
+        next = setPath(next, 'memory.vector.baseUrl', baseUrl)
+        next = setPath(next, 'memory.vector.model', model)
+        setDraft(next)
+      }
+      const v = draft.memory.vector || {}
+      return h(Card, { title: '语义检索（Embedding RAG）', right: f.sw('memory.vector.enabled'), desc: '可选：把记忆文本发给 embedding 服务换成向量，存在本机。每轮回复前和关键词一起找记忆——说法不一样也能想起来。关着或服务出错时只用关键词，不影响回复。' },
+        h(Row, { label: '服务', hint: '都走 OpenAI 兼容的 POST {服务地址}/embeddings；硅基和方舟只是地址、模型不同' },
+          f.select('memory.vector.provider', [
+            { value: 'siliconflow', label: '硅基流动' },
+            { value: 'ark', label: '火山方舟（豆包 embedding）' },
+            { value: 'openai', label: 'OpenAI' },
+            { value: 'custom', label: '其他兼容服务' },
+          ], { width: 220 })),
+        h(Row, { label: '服务地址', hint: '硅基：https://api.siliconflow.cn/v1；方舟：https://ark.cn-beijing.volces.com/api/v3' },
+          f.text('memory.vector.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+        h(Row, { label: '模型', hint: '硅基 bge-m3；方舟填控制台开通的 doubao-embedding 模型 ID' },
+          f.text('memory.vector.model', { size: 'wide', placeholder: 'BAAI/bge-m3' })),
+        h(Row, { label: 'API Key', hint: '只存在本机，面板不回显；不需要密钥的本地服务可留空' },
+          f.text('memory.vector.apiKey', { type: 'password', placeholder: draft.memory.vector?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+        h(Row, { label: '向量维度', hint: '0 = 用模型默认；只有 Qwen3-Embedding 等支持自定义维度的模型需要填' },
+          f.num('memory.vector.dimensions', { min: 0, max: 8192 })),
+        h(Row, { label: '相似度门槛', hint: '0.55 左右比较稳；调低更容易想起，调高更准' },
+          f.range('memory.vector.minSimilarity', 0.3, 0.9, 0.05, (x) => Number(x).toFixed(2))),
+        h(Row, { label: '查询超时', hint: '超过这个时间就这一轮先用关键词，不拖慢回复' },
+          f.num('memory.vector.queryTimeoutMs', { min: 500, max: 15000, step: 500 })),
+        h('div', { className: 'ab-flex', style: { marginTop: 8, flexWrap: 'wrap' } },
+          h(Btn, { small: true, kind: 'ghost', onClick: () => fill('https://api.siliconflow.cn/v1', 'BAAI/bge-m3') }, '填硅基推荐值'),
+          h(Btn, { small: true, kind: 'ghost', onClick: () => fill('https://ark.cn-beijing.volces.com/api/v3', 'doubao-embedding-large-text-250515') }, '填方舟推荐值'),
+          h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭' }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
+          h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在清空并按当前记忆重建；条数多会分批，慢慢同步…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(load, 1500) } }, '重建索引'),
+          h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新状态')),
+        h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
+          s ? `本机已同步 ${s.indexed} / ${s.total} 条${s.model ? ' · ' + s.model : ''}${s.enabled ? '' : '（开关关着）'}${s.lastError ? ' · 上次失败：' + s.lastError : ''}` : '正在查同步状态…'),
+        h('div', { className: 'ab-muted ab-small' }, '改完地址 / 模型 / Key 先点底部「保存」，再点「测试」或「重建索引」。'),
+        v.enabled && !String(v.baseUrl || '').trim() ? h('div', { className: 'ab-note' }, '开了语义检索但还没填服务地址和模型，现在仍然只用关键词。') : null)
+    }
+
     function Mood({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -2119,6 +2248,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h('input', { className: 'ab-input wide', placeholder: '搜索记忆，例如：白米饭、游戏、约定…', value: q, onChange: (e) => setQ(e.target.value) }),
           mem === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : mem.length === 0 ? h(Empty, { icon: '🫧', text: q ? '没找到相关的记忆' : '还没有记住什么。' }) :
             h('div', { className: 'ab-list', style: { marginTop: 8 } }, mem.map((m) => h(MemoryRow, { key: m.id, m, onChanged: () => load(), toast })))),
+        h(VectorCard, { draft, setDraft, toast }),
         h(RecallLog, null),
         h(MemoryImport, { toast, onDone: () => load() }),
       )

@@ -139,7 +139,7 @@ function openaiTts({ id, name, description, baseUrl, model, voice, format = 'mp3
     ],
     defaults: { baseUrl, model, voice, format, speed },
     async synthesize({ text, config, fetchImpl = globalThis.fetch, timeoutMs }) {
-      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/speech\/?$/i, '')
+      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/(?:speech|transcriptions)\/?$/i, '')
       const url = joinUrl(base, '/audio/speech')
       const headers = { 'content-type': 'application/json' }
       if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`
@@ -240,7 +240,7 @@ function openaiAsr({ id, name, description, baseUrl, model, language = '' }) {
     defaults: { baseUrl, model, language },
     async transcribe({ buffer, config, fetchImpl = globalThis.fetch, timeoutMs }) {
       if (!buffer || !buffer.length) throw new Error('没有音频')
-      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/transcriptions\/?$/i, '')
+      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/(?:speech|transcriptions)\/?$/i, '')
       const url = joinUrl(base, '/audio/transcriptions')
       const form = new FormData()
       form.append('file', new Blob([buffer], { type: 'audio/wav' }), 'voice.wav')

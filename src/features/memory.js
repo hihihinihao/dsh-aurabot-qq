@@ -354,7 +354,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     }
   }
 
-  function recall(query, { about, limit, where = '', context = '', vectorHits } = {}) {
+  function recall(query, { about, limit, where = '', context = '', vectorHits, shown = true } = {}) {
     const max = limit ?? getConfig().memory.recallCount
     const hits = search(index(), query, { about, limit: max, vectorHits })
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
@@ -367,7 +367,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     }
     recallLog.unshift({ at: Date.now(), where, query: String(query).slice(0, 120), hits: hits.map((h) => ({ id: h.it.id, text: h.it.text, score: Number(h.score.toFixed(2)), why: h.why || [] })) })
     recallLog.length = Math.min(recallLog.length, 20)
-    if (hits.length) {
+    if (shown && hits.length) {
       const s = load()
       for (const h of hits) {
         const m = s.items.find((x) => x.id === h.it.id)

@@ -168,7 +168,7 @@ function doubaoV1Tts() {
   return {
     id: 'doubao',
     name: '豆包语音（火山）',
-    description: '火山引擎豆包语音合成 v1（历史接口，仍可用）：AppID + Access Token，音频在 JSON 的 data 字段。只支持 v3 的新音色暂未适配',
+    description: '火山引擎豆包语音合成 v1（历史接口，仍可用）：AppID + Access Token，音频在 JSON 的 data 字段。实测 2.0 的 uranus 音色可用，控制台新音色以实际为准',
     fields: [
       { key: 'appId', label: 'AppID', placeholder: '在火山引擎语音控制台复制' },
       { key: 'accessToken', label: 'Access Token', type: 'password', secret: true, placeholder: '在火山引擎语音控制台复制' },

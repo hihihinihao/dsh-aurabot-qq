@@ -3,6 +3,8 @@
 // 别的模块（空间日记、B 站、翻唱）会往这里记她的经历；记忆模块关着时它们自己跳过。
 
 import { createMemoryStore, memoryLine } from '../../features/memory.js'
+import { createVectorIndex } from '../../features/memory-vector.js'
+import { mergeFromPanel, normalize } from '../../core/config.js'
 import { defineTool, str } from '../../tools/tools.js'
 
 export default {
@@ -113,7 +115,16 @@ export default {
     api.route('/memory/vector/status', async () => ({ ok: true, ...memory.vectorStatus() }))
     api.route('/memory/vector/test', async (req) => {
       const b = await http.body(req)
-      try { return { ok: true, ...(await memory.vectorTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
+      try {
+        // 面板带上当前草稿：没保存也能测；空 API Key 沿用已保存的
+        const text = String(b.text || '今天想吃白米饭')
+        if (b.vector && typeof b.vector === 'object') {
+          const cfg = normalize(mergeFromPanel(api.config(), { memory: { vector: b.vector } }))
+          const idx = createVectorIndex({ getConfig: () => ({ memory: { enabled: true, vector: { ...cfg.memory.vector, enabled: true } } }), log: api.log })
+          return { ok: true, ...(await idx.test(text)) }
+        }
+        return { ok: true, ...(await memory.vectorTest(text)) }
+      } catch (error) { return { ok: false, message: error.message } }
     })
     api.route('/memory/vector/rebuild', async () => {
       if (!memory.vectorReset()) return { ok: false, message: '先开启向量检索并填好服务地址、模型和 Key' }

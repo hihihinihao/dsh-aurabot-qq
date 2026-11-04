@@ -1373,6 +1373,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const providers = useVoiceProviders()
       const ttsDef = (providers.tts || []).find((d) => d.id === draft.voice.engine)
       const asrDef = (providers.asr || []).find((d) => d.id === draft.voice.asrProvider)
+      const voiceDirty = Boolean(st && st.config) && JSON.stringify(draft.voice) !== JSON.stringify(st.config.voice)
       const fillHttp = (obj) => {
         let next = draft
         for (const [k, v] of Object.entries(obj)) next = setPath(next, 'voice.http.' + k, v)
@@ -1382,6 +1383,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [src, setSrc] = useState('')
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '说话（文字转语音）', right: f.sw('voice.enabled'), desc: '回复里写了 <voice>…</voice> 的部分会变成 QQ 语音条；对方明确要语音时一定发语音；短回复也有一定概率整条变语音。' },
+          voiceDirty ? h('div', { className: 'ab-note' }, '语音设置有未保存的改动：点「生成」试听会直接用当前设置；真正聊天要等点底部「保存设置」后生效。') : null,
           h('div', { style: { margin: '4px 0 12px' } }, f.choices('voice.engine', [
             { value: 'auto', label: '自动', desc: 'edge-tts 优先，不行用 Windows 语音' },
             { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
@@ -1452,10 +1454,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           ] : null,
           h(Row, { label: '短回复变语音的概率' }, f.percent('voice.autoChance')),
           h(Row, { label: '多短算短回复' }, f.range('voice.autoMaxChars', 10, 200, 5, (v) => v + ' 字')),
-          h(Row, { label: '试听', hint: '先保存设置再试听' },
+          h(Row, { label: '试听', hint: '用当前页面设置试听（没保存也生效；本地接口不会把这里顶掉）' },
             h('input', { className: 'ab-input', value: txt, onChange: (e) => setTxt(e.target.value) }),
-            h(Btn, { small: true, onClick: async () => { const r = await post('/voice/test', { text: txt }); if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data); else toast(r.message) } }, '生成'),
-            src ? h('audio', { src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
+            h(Btn, { small: true, onClick: async () => {
+              setSrc('')
+              const r = await post('/voice/test', { text: txt, voice: draft.voice })
+              if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data)
+              else toast(r.message)
+            } }, '生成'),
+            src ? h('audio', { key: src, src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
         ),
         h(VoiceSongModel, { draft, setDraft }),
         h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给她：本地接口 → QQ 自带的转文字 → 云端识别（可选）→ DSH 自带的语音识别。任何一层失败都会自动继续试下一层。' },
@@ -1464,10 +1471,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           asrDef ? h(Row, { label: '先用谁', hint: 'QQ 自带通常 1~2 秒；云端更准但实测硅基要十几秒，建议保持「先 QQ」' },
             f.select('voice.asrPrefer', [{ value: 'qq', label: '先 QQ 自带（推荐）' }, { value: 'cloud', label: '先云端识别' }], { width: 220 })) : null,
           asrDef ? h(ProviderFields, { def: asrDef, group: 'asrConfig', draft, setDraft }) : null,
-          asrDef ? h(Row, { label: '测试', hint: '先用内置语音念一句，再交给云端识别；改完配置先保存再测' },
+          asrDef ? h(Row, { label: '测试', hint: '先用内置语音念一句，再交给云端识别；用当前页面设置，没保存也生效' },
             h(Btn, { small: true, onClick: async () => {
-              toast('正在合成并识别，可能要几秒…')
-              const r = await post('/voice/asr-provider-test', { text: '今天想吃白米饭' })
+              toast('正在合成并识别，可能要十几秒…')
+              const r = await post('/voice/asr-provider-test', { text: '今天想吃白米饭', voice: draft.voice })
               toast(r.ok ? '念的是「' + r.said + '」，听成了「' + r.heard + '」' : r.message)
             } }, '测试云端识别')) : null,
           h(AsrStatus, { toast })),
@@ -2181,12 +2188,12 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         h('div', { className: 'ab-flex', style: { marginTop: 8, flexWrap: 'wrap' } },
           h(Btn, { small: true, kind: 'ghost', onClick: () => fill('https://api.siliconflow.cn/v1', 'BAAI/bge-m3') }, '填硅基推荐值'),
           h(Btn, { small: true, kind: 'ghost', onClick: () => fill('https://ark.cn-beijing.volces.com/api/v3', 'doubao-embedding-large-text-250515') }, '填方舟推荐值'),
-          h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭' }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
-          h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在清空并按当前记忆重建；条数多会分批，慢慢同步…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(load, 1500) } }, '重建索引'),
+          h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭', vector: draft.memory.vector }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
+          h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在按「已保存」的设置清空重建；条数多会分批，慢慢同步…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(load, 1500) } }, '重建索引'),
           h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新状态')),
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
           s ? `本机已同步 ${s.indexed} / ${s.total} 条${s.model ? ' · ' + s.model : ''}${s.enabled ? '' : '（开关关着）'}${s.lastError ? ' · 上次失败：' + s.lastError : ''}` : '正在查同步状态…'),
-        h('div', { className: 'ab-muted ab-small' }, '改完地址 / 模型 / Key 先点底部「保存」，再点「测试」或「重建索引」。'),
+        h('div', { className: 'ab-muted ab-small' }, '「测试」用当前页面设置（没保存也生效）；「重建索引」用已保存的设置，所以重建前先保存。'),
         v.enabled && !String(v.baseUrl || '').trim() ? h('div', { className: 'ab-note' }, '开了语义检索但还没填服务地址和模型，现在仍然只用关键词。') : null)
     }
 

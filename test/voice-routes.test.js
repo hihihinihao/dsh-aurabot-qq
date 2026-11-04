@@ -1,11 +1,13 @@
 // 宿主路由冒烟：云端 provider 列表、ASR 未配置时的提示、向量状态。假 DSH + 假 OneBot，不联网。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startMockOneBot } from './helpers/mock-onebot.js'
 import { createFakeDsh } from './helpers/fake-dsh.js'
+import { buildWav } from '../src/voice/wav.js'
 
 const OWNER = '10000001'
 const BOT = '20000002'
@@ -65,4 +67,26 @@ test('向量状态默认关闭、未配置、0 条', async () => {
   assert.equal(r.configured, false)
   assert.equal(r.indexed, 0)
   assert.equal(r.total, 0)
+})
+
+test('试听用当前页面草稿：换地址/模型后不用先保存也会变', async () => {
+  const wavA = buildWav(new Int16Array(24000).fill(1000), 24000)
+  const wavB = buildWav(new Int16Array(24000).fill(-1000), 24000)
+  const srv = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'audio/wav' })
+    res.end(req.url.includes('/b') ? wavB : wavA)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const port = srv.address().port
+  try {
+    const a = await json('/voice/test', { text: '试听', voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${port}/a?text={text}` } } })
+    const b = await json('/voice/test', { text: '试听', voice: { engine: 'http', http: { urlTemplate: `http://127.0.0.1:${port}/b?text={text}` } } })
+    assert.equal(a.ok, true)
+    assert.equal(b.ok, true)
+    assert.equal(a.engine, 'http')
+    assert.equal(b.engine, 'http')
+    assert.notEqual(a.data, b.data, '草稿换了服务地址，音频必须跟着换')
+  } finally {
+    srv.close()
+  }
 })

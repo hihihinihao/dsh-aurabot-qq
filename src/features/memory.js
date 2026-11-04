@@ -547,10 +547,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const about = chat && chat.kind === 'private' ? chat.userId : undefined
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText, vectorHits }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    const maxHits = Math.max(1, Math.min(10, Number(cfg.recallHintCount) || 4))
+    const maxChars = Math.max(100, Math.min(1000, Number(cfg.recallHintChars) || 300))
+    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText, vectorHits }).filter((h) => !shown.has(h.it.id)).slice(0, maxHits)
     if (!hits.length) return backdrop
     let body = hits.map((h) => memoryLine(h.it)).join('；')
-    if (body.length > 300) body = body.slice(0, 300) + '…'
+    if (body.length > maxChars) body = body.slice(0, maxChars) + '…'
     return ['（你记得这些事，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）', backdrop].filter(Boolean).join('\n')
   }
 

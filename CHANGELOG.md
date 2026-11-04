@@ -6,6 +6,7 @@
   - **TTS**：新增云端 provider 注册表（`src/voice/providers.js`），面板「语音」页可直接选硅基流动（OpenAI 兼容 `/audio/speech`，内置 CosyVoice2）、豆包语音（火山 `openspeech` v1，AppID + Access Token）、OpenAI；字段和默认值由 provider 声明，面板自动出表单，以后加厂商不用改核心。通用 HTTP 接口也补上了 POST、自定义请求头 / 请求体、JSON base64 音频解析（回移上游 #183），能接任意云 TTS。失败自动退回 edge-tts / Windows 语音。
   - **ASR**：新增云端识别（硅基 `SenseVoiceSmall` / OpenAI `whisper-1` 等 OpenAI 兼容 `/audio/transcriptions`）。默认顺序：本地脚本 → QQ 自带转文字 → 云端识别 → DSH 识别（本地实测硅基 SenseVoice 一次约 14 秒，所以默认放在 QQ 后面兜底）；面板可切「先云端识别」。任何一层失败继续下一层，另有「测试云端识别」。
   - **Embedding RAG**：记忆新增可选语义检索（`memory.vector`）：硅基 `BAAI/bge-m3`、火山方舟 `doubao-embedding-*` 或任意 OpenAI 兼容 `/embeddings`。向量只存本机，增量同步；召回时 BM25 与向量按名次 RRF 融合，关键词没命中也能按意思想起来；服务出错 / 超时静默退回纯关键词，不拖慢回复。面板可看同步条数、测试、重建索引。密钥在面板不回显、日志脱敏。
+  - **每轮带多少记忆可配**：`memory.recallHintCount` / `memory.recallHintChars`（默认 4 条 / 300 字），面板「记忆库」可调；检索候选数仍是 `memory.recallCount`。要注意这是把更多「记忆条目」带进这一轮，不是把更多聊天轮次塞进上下文。
   - **试听 / 测试用当前页面草稿**：以前「试听」只读已保存的配置，改了模型/音色但没点保存，生成的还是上一轮的音频。现在「生成」直接带上页面上的 voice 草稿（空 Key 沿用已保存的），语音设置没保存也能听到新模型；ASR「测试云端识别」和 RAG「测试」同样。真正聊天仍要保存后生效，面板会提示。
   - 新增 15 条单测（provider 请求形状、豆包 base64、POST 模板、ASR multipart、配置收敛/脱敏、向量同步/召回/降级/重建、宿主路由冒烟、试听草稿覆盖）。
 

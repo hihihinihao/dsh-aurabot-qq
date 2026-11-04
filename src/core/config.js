@@ -203,7 +203,9 @@ export const DEFAULTS = {
   mood: { enabled: true, halfLifeHours: 3, judge: false }, // judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
   memory: {
     enabled: true,
-    recallCount: 6,
+    recallCount: 6, // 先检索这么多条候选
+    recallHintCount: 4, // 每轮真正塞进提示词的条数（多了更占上下文，也更容易分心）
+    recallHintChars: 300, // 这些记忆加起来的字数上限
     dailyConsolidate: true,
     consolidateTimes: ['04:00', '16:00'], // 每天这几个时间把临时记忆（聊天流水）整理进长期记忆、相处经验和说话方式；过了一天的流水整理完清空
     // 语义检索（可选）：把记忆文本发给 embedding 服务换向量，存在本机；召回时和关键词一起排序。
@@ -437,6 +439,8 @@ export function normalize(raw) {
   c.memory.consolidateTimes = [...new Set((Array.isArray(c.memory.consolidateTimes) ? c.memory.consolidateTimes : String(c.memory.consolidateTimes || '').split(/[\s,，]+/)).map((t) => hhmm(t, '')).filter(Boolean).map((t) => t.padStart(5, '0')))].sort().slice(0, 4)
   if (!c.memory.consolidateTimes.length) c.memory.consolidateTimes = ['04:00', '16:00']
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, 20)
+  c.memory.recallHintCount = num(c.memory.recallHintCount, 4, 1, 10)
+  c.memory.recallHintChars = num(c.memory.recallHintChars, 300, 100, 1000)
   if (!isObj(c.memory.vector)) c.memory.vector = structuredClone(DEFAULTS.memory.vector)
   const v = c.memory.vector
   v.enabled = bool(v.enabled, false)

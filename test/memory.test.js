@@ -59,6 +59,10 @@ before(async () => {
 test('默认一天整理两次；老配置的单个时间自动变成两个', () => {
   assert.deepEqual(normalize({}).memory.consolidateTimes, ['04:00', '16:00'])
   assert.deepEqual(normalize({ memory: { consolidateAt: '03:30' } }).memory.consolidateTimes, ['03:30', '15:30'])
+  assert.equal(normalize({}).memory.recallHintCount, 4)
+  assert.equal(normalize({}).memory.recallHintChars, 300)
+  assert.equal(normalize({ memory: { recallHintCount: 6, recallHintChars: 500 } }).memory.recallHintCount, 6)
+  assert.equal(normalize({ memory: { recallHintCount: 6, recallHintChars: 500 } }).memory.recallHintChars, 500)
 })
 
 test('整理：提炼记忆、相处经验和说话方式；同一天再整理只处理新增的聊天', async () => {

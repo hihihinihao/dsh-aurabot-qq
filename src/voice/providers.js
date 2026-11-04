@@ -130,7 +130,7 @@ function openaiTts({ id, name, description, baseUrl, model, voice, format = 'mp3
     name,
     description,
     fields: [
-      { key: 'baseUrl', label: '服务地址', placeholder: baseUrl, hint: '一般以 /v1 结尾' },
+      { key: 'baseUrl', label: '服务地址', placeholder: baseUrl, hint: '只填到 /v1，不要带 /audio/speech' },
       { key: 'apiKey', label: 'API Key', type: 'password', secret: true, placeholder: 'sk-…' },
       { key: 'model', label: '模型', placeholder: model, hint: '例如 FunAudioLLM/CosyVoice2-0.5B' },
       { key: 'voice', label: '音色', placeholder: voice, hint: '例如 FunAudioLLM/CosyVoice2-0.5B:claire' },
@@ -139,7 +139,8 @@ function openaiTts({ id, name, description, baseUrl, model, voice, format = 'mp3
     ],
     defaults: { baseUrl, model, voice, format, speed },
     async synthesize({ text, config, fetchImpl = globalThis.fetch, timeoutMs }) {
-      const url = joinUrl(config.baseUrl, '/audio/speech')
+      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/speech\/?$/i, '')
+      const url = joinUrl(base, '/audio/speech')
       const headers = { 'content-type': 'application/json' }
       if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`
       const body = {
@@ -231,15 +232,16 @@ function openaiAsr({ id, name, description, baseUrl, model, language = '' }) {
     name,
     description,
     fields: [
-      { key: 'baseUrl', label: '服务地址', placeholder: baseUrl, hint: '一般以 /v1 结尾' },
+      { key: 'baseUrl', label: '服务地址', placeholder: baseUrl, hint: '只填到 /v1，不要带 /audio/transcriptions' },
       { key: 'apiKey', label: 'API Key', type: 'password', secret: true, placeholder: 'sk-…' },
-      { key: 'model', label: '模型', placeholder: model, hint: '例如 FunAudioLLM/SenseVoiceSmall' },
+      { key: 'model', label: '模型', placeholder: model, hint: '例如 FunAudioLLM/SenseVoiceSmall 或 XingChenAGI/XingChenASR-V3.2-Ultra' },
       { key: 'language', label: '语言', placeholder: 'zh（可留空）', hint: '只对支持 language 的模型有效' },
     ],
     defaults: { baseUrl, model, language },
     async transcribe({ buffer, config, fetchImpl = globalThis.fetch, timeoutMs }) {
       if (!buffer || !buffer.length) throw new Error('没有音频')
-      const url = joinUrl(config.baseUrl, '/audio/transcriptions')
+      const base = String(config.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/audio\/transcriptions\/?$/i, '')
+      const url = joinUrl(base, '/audio/transcriptions')
       const form = new FormData()
       form.append('file', new Blob([buffer], { type: 'audio/wav' }), 'voice.wav')
       form.append('model', config.model)

@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **语音识别独立成页**：以前「听语音」塞在「语音」页最下面，现在拆成和「语音」「表情包」同级的「语音识别」菜单；开关、云端 provider、先用谁、测试和 DSH 识别状态都搬过去。豆包 provider 默认音色同时改为 `zh_female_vv_uranus_bigtts`（`volcano_tts` / 24000Hz）。
 - **云端语音 + 语义记忆（可选，默认关）**：
   - **TTS**：新增云端 provider 注册表（`src/voice/providers.js`），面板「语音」页可直接选硅基流动（OpenAI 兼容 `/audio/speech`，内置 CosyVoice2）、豆包语音（火山 `openspeech` v1，AppID + Access Token）、OpenAI；字段和默认值由 provider 声明，面板自动出表单，以后加厂商不用改核心。通用 HTTP 接口也补上了 POST、自定义请求头 / 请求体、JSON base64 音频解析（回移上游 #183），能接任意云 TTS。失败自动退回 edge-tts / Windows 语音。
   - **ASR**：新增云端识别（硅基 `SenseVoiceSmall` / OpenAI `whisper-1` 等 OpenAI 兼容 `/audio/transcriptions`）。默认顺序：本地脚本 → QQ 自带转文字 → 云端识别 → DSH 识别（本地实测硅基 SenseVoice 一次约 14 秒，所以默认放在 QQ 后面兜底）；面板可切「先云端识别」。任何一层失败继续下一层，另有「测试云端识别」。

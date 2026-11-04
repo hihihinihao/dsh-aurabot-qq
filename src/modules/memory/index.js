@@ -131,6 +131,11 @@ export default {
       await memory.vectorSync()
       return { ok: true, message: '本机向量已清空，正在按当前记忆重新同步', ...memory.vectorStatus() }
     })
+    api.route('/memory/rerank/status', async () => ({ ok: true, ...memory.rerankStatus() }))
+    api.route('/memory/rerank/test', async (req) => {
+      const b = await http.body(req)
+      try { return { ok: true, ...(await memory.rerankTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
+    })
 
     return memory
   },

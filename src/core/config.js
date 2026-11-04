@@ -220,6 +220,15 @@ export const DEFAULTS = {
       minSimilarity: 0.55,
       queryTimeoutMs: 3000,
     },
+    // 可选精排：对已经过滤好的候选重新打分；失败/超时回退原顺序
+    rerank: {
+      enabled: false,
+      baseUrl: '', // 留空复用 vector.baseUrl
+      model: 'BAAI/bge-reranker-v2-m3',
+      apiKey: '', // 留空复用 vector.apiKey
+      topN: 20,
+      timeoutMs: 2000,
+    },
   },
   song: {
     enabled: false,
@@ -450,6 +459,14 @@ export function normalize(raw) {
   v.dimensions = Math.round(num(v.dimensions, 0, 0, 8192))
   v.minSimilarity = num(v.minSimilarity, 0.55, 0.2, 0.95)
   v.queryTimeoutMs = num(v.queryTimeoutMs, 3000, 500, 15000)
+  if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
+  const rr = c.memory.rerank
+  rr.enabled = bool(rr.enabled, false)
+  for (const k of ['baseUrl', 'model', 'apiKey']) rr[k] = String(rr[k] || '').trim()
+  rr.baseUrl = rr.baseUrl.replace(/\/+$/, '').replace(/\/rerank$/i, '')
+  rr.model = rr.model || DEFAULTS.memory.rerank.model
+  rr.topN = Math.round(num(rr.topN, 20, 2, 50))
+  rr.timeoutMs = Math.round(num(rr.timeoutMs, 2000, 500, 10_000))
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   c.merge.enabled = bool(c.merge.enabled, true)
@@ -550,7 +567,7 @@ const providerSecretPaths = () => {
 }
 const SECRETS = [
   ['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'],
-  ['memory', 'vector', 'apiKey'],
+  ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'],
   ...providerSecretPaths(),
   ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'],
 ]

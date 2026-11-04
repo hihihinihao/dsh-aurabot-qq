@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
 import { createVectorIndex } from './memory-vector.js'
+import { createReranker } from './rerank.js'
 
 // ---------------- 纯函数：切词与打分 ----------------
 
@@ -197,6 +198,7 @@ export function parseReflection(out) {
 
 export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   const vector = createVectorIndex({ getConfig, log, fetchImpl })
+  const reranker = createReranker({ getConfig, log, fetchImpl })
   const file = () => dataDir('memories.json')
   const load = () => readJson(file(), () => ({ items: [] }))
   const save = (s) => {
@@ -562,9 +564,28 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   }
 
   async function recallHintAsync(chat, queryText, prevText = '') {
+    const cfg = getConfig().memory
+    if (!cfg.enabled) return ''
     const q = String(queryText || '').trim()
     if (!q) return ''
-    return recallHintText(chat, queryText, prevText, await vectorHits(q))
+    const backdrop = groupBackdrop(chat, q)
+    const recent = recentEvents()
+    const shown = new Set(recent.map((m) => m.id))
+    const about = chat && chat.kind === 'private' ? chat.userId : undefined
+    const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
+    const maxHits = Math.max(1, Math.min(10, Number(cfg.recallHintCount) || 4))
+    const maxChars = Math.max(100, Math.min(1000, Number(cfg.recallHintChars) || 300))
+    const candidateLimit = cfg.rerank?.enabled ? Math.max(maxHits, Math.min(50, Number(cfg.rerank.topN) || 20)) : maxHits
+    let hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText, vectorHits: await vectorHits(q), limit: candidateLimit, shown: false }).filter((h) => !shown.has(h.it.id))
+    if (cfg.rerank?.enabled) {
+      try { hits = await reranker.rank(q, hits) } catch (error) { log.debug('重排失败，保留原顺序：', error.message) }
+    }
+    hits = hits.slice(0, maxHits)
+    touch(hits)
+    if (!hits.length) return backdrop
+    let body = hits.map((h) => memoryLine(h.it)).join('；')
+    if (body.length > maxChars) body = body.slice(0, maxChars) + '…'
+    return ['（你记得这些事，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）', backdrop].filter(Boolean).join('\n')
   }
 
   /** 回顾：结合最近聊天和已有经验，更新这个人的相处经验（合并、提炼、最多 8 条，概括不琐碎）。 */
@@ -822,6 +843,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
 
   return {
     recallHint, recallHintAsync, recallWithVector, vectorHits,
+    rerankStatus: () => ({ configured: reranker.configured(), ...(reranker.settings() || {}) }),
+    rerankTest: (text) => reranker.test(text),
     add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, importCandidates, importCommit,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
     setProfile, buildProfile,

@@ -2175,7 +2175,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         setDraft(next)
       }
       const v = draft.memory.vector || {}
-      return h(Card, { title: '语义检索（Embedding RAG）', right: f.sw('memory.vector.enabled'), desc: '可选：把记忆文本发给 embedding 服务换成向量，存在本机。每轮回复前和关键词一起找记忆——说法不一样也能想起来。关着或服务出错时只用关键词，不影响回复。' },
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '语义检索（Embedding RAG）', right: f.sw('memory.vector.enabled'), desc: '可选：把记忆文本发给 embedding 服务换成向量，存在本机。每轮回复前和关键词一起找记忆——说法不一样也能想起来。关着或服务出错时只用关键词，不影响回复。' },
         h(Row, { label: '服务', hint: '都走 OpenAI 兼容的 POST {服务地址}/embeddings；硅基和方舟只是地址、模型不同' },
           f.select('memory.vector.provider', [
             { value: 'siliconflow', label: '硅基流动' },
@@ -2204,7 +2205,23 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
           s ? `本机已同步 ${s.indexed} / ${s.total} 条${s.model ? ' · ' + s.model : ''}${s.enabled ? '' : '（开关关着）'}${s.lastError ? ' · 上次失败：' + s.lastError : ''}` : '正在查同步状态…'),
         h('div', { className: 'ab-muted ab-small' }, '「测试」用当前页面设置（没保存也生效）；「重建索引」用已保存的设置，所以重建前先保存。'),
-        v.enabled && !String(v.baseUrl || '').trim() ? h('div', { className: 'ab-note' }, '开了语义检索但还没填服务地址和模型，现在仍然只用关键词。') : null)
+        v.enabled && !String(v.baseUrl || '').trim() ? h('div', { className: 'ab-note' }, '开了语义检索但还没填服务地址和模型，现在仍然只用关键词。') : null),
+        h(RerankCard, { draft, setDraft, toast }))
+    }
+
+    /** 精排：对已经召回并过滤好的候选重新打分；默认关，失败回退原顺序。 */
+    function RerankCard({ draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const c = draft.memory.rerank || {}
+      return h(Card, { title: '重排候选（Reranker，可选）', right: f.sw('memory.rerank.enabled'), desc: '对已经找出来的候选重新打分，把真正相关的排前面。默认关闭；超时或失败会退回原来的关键词 + 向量顺序，不影响回复。地址/Key 留空时复用上面的向量服务。' },
+        h(Row, { label: '模型', hint: '硅基 BAAI/bge-reranker-v2-m3 免费' }, f.text('memory.rerank.model', { size: 'wide', placeholder: 'BAAI/bge-reranker-v2-m3' })),
+        h(Row, { label: '服务地址', hint: '留空复用向量服务地址；一般和 embedding 是同一个 /v1' }, f.text('memory.rerank.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+        h(Row, { label: 'API Key', hint: '留空复用向量服务的 Key；本地服务可留空' }, f.text('memory.rerank.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '留空复用向量 Key' })),
+        h(Row, { label: '候选数', hint: '每次送多少条给 reranker；越多越慢，20 左右够用' }, f.num('memory.rerank.topN', { min: 2, max: 50 })),
+        h(Row, { label: '超时', hint: '超过就这一轮用原顺序，不拖慢回复' }, f.num('memory.rerank.timeoutMs', { min: 500, max: 10000, step: 500 })),
+        h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+          h(Btn, { small: true, onClick: async () => { const r = await post('/memory/rerank/test', { text: '今天想吃白米饭' }); toast(r.ok ? `重排正常：${r.model}，最高分 ${Number(r.score).toFixed(3)}` : r.message) } }, '测试重排')),
+        h('div', { className: 'ab-muted ab-small' }, '重排只处理已经通过群聊/人物权限过滤的候选，不会看到不该带出的记忆。'))
     }
 
     function Mood({ st, draft, setDraft, toast }) {

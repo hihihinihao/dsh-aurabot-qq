@@ -130,6 +130,9 @@ export function createVectorIndex({ getConfig, log, fetchImpl = globalThis.fetch
         const vectors = rows.map((row) => row?.embedding)
         const dims = data.dims || vectors[0]?.length
         if (!vectors.every((v) => validVector(v, dims))) throw new Error('向量无效')
+        // 同一批必须同维度；混进来会在 search 时被跳过，索引也就半残了
+        if (vectors.some((v) => v.length !== dims)) throw new Error('向量维度不一致')
+        if (c.dimensions && dims !== c.dimensions) throw new Error('返回维度与配置不符')
         return vectors
       }
       const vectors = await Promise.race([work(), new Promise((resolve, reject) => {
